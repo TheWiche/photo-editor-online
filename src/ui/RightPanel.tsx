@@ -3,6 +3,7 @@ import { AdjustmentsPanel, FiltersPanel } from './AdjustmentsPanel';
 import { Icon, type IconName } from './icons';
 import { AiToolsPanel } from './AiToolsPanel';
 import { LayersPanel } from './LayersPanel';
+import { extTabs } from './extensions';
 import { useUI, type RightTab } from './uiStore';
 
 export const TABS: { id: RightTab; label: string; icon: IconName }[] = [
@@ -10,6 +11,7 @@ export const TABS: { id: RightTab; label: string; icon: IconName }[] = [
   { id: 'adjust', label: 'Ajustes', icon: 'sliders' },
   { id: 'filters', label: 'Filtros', icon: 'wand' },
   { id: 'ai', label: 'IA', icon: 'sparkles' },
+  ...extTabs.map(({ id, label, icon }) => ({ id, label, icon })),
 ];
 
 /** Panel derecho con pestañas. En móvil se muestra como hoja inferior. */
@@ -55,6 +57,7 @@ export function RightPanel() {
         {tab === 'adjust' && <AdjustmentsPanel />}
         {tab === 'filters' && <FiltersPanel />}
         {tab === 'ai' && <AiToolsPanel />}
+        {extTabs.map(({ id, Component }) => tab === id && <Component key={id} />)}
       </div>
     </aside>
   );

@@ -10,6 +10,7 @@ import { Toolbar } from './ui/Toolbar';
 import { ToolOptions } from './ui/ToolOptions';
 import { TopBar } from './ui/TopBar';
 import { Tour } from './ui/Tour';
+import { extOverlays } from './ui/extensions';
 import { isTourDone, useUI } from './ui/uiStore';
 import { useShortcuts } from './ui/useShortcuts';
 import { Welcome } from './ui/Welcome';
@@ -96,6 +97,7 @@ export default function App() {
       <NewDocDialog />
       <ShortcutsDialog />
       <Tour />
+      {extOverlays.map((O, i) => <O key={i} />)}
       <Toasts />
     </div>
   );

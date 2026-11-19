@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { copyToClipboard } from '../core/export';
 import { sampleBitmap } from '../core/image';
 import { useEditor } from '../core/store';
+import { extMenus } from './extensions';
 import { AiPanel } from './AiPanel';
 import { Menu } from './controls';
 import { pickFiles } from './files';
@@ -98,6 +99,7 @@ export function TopBar() {
         { label: 'Atajos de teclado', icon: 'keyboard', shortcut: '?', onSelect: () => openDialog('shortcuts') },
       ]} />
 
+      {extMenus.map((m) => <Menu key={m.id} label={m.label} icon={m.icon} items={typeof m.items === 'function' ? m.items() : m.items} />)}
       <AiPanel />
 
       <button type="button" className="btn btn-primary" data-tour="export" onClick={() => openDialog('export')} disabled={!hasDoc}>
