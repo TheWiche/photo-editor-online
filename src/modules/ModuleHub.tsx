@@ -52,7 +52,8 @@ export default function ModuleHub() {
 
   const installedCount = MODULE_IDS_LIST.filter((id) => states[id].status === 'installed').length;
   const busy = MODULE_IDS_LIST.some((id) => states[id].status === 'downloading');
-  const runtimeInstalled = MODULES.some((m) => m.needsRuntime && states[m.id].status === 'installed');
+  // Los módulos de Transformers.js comparten motor; LaMa (archivos propios) usa el suyo.
+  const runtimeInstalled = MODULES.some((m) => !!m.transformers && states[m.id].status === 'installed');
 
   // Re-verifica la caché real al abrir el Centro.
   useEffect(() => {
@@ -205,7 +206,7 @@ function ModuleCard({ spec, state, variant, runtimeInstalled, focused, focusSeq,
 
   const soon = spec.availability === 'proximamente';
   const sizeMB = state.status === 'installed' && state.bytes ? state.bytes / 1e6 : spec.sizeByVariantMB[variant];
-  const extraRuntime = spec.needsRuntime && !runtimeInstalled && state.status !== 'installed';
+  const extraRuntime = spec.needsRuntime && state.status !== 'installed' && (spec.files?.length ? true : !runtimeInstalled);
 
   const statusLabel = useMemo(() => {
     if (soon) return 'Próximamente';

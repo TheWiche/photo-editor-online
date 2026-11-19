@@ -109,6 +109,7 @@
 .mh-bar > span { display: block; height: 100%; background: var(--mh-accent); border-radius: inherit; transition: width 0.25s linear; }
 .mh-bar--indeterminate > span { width: 35% !important; animation: mh-indet 1.2s ease-in-out infinite; }
 @keyframes mh-indet { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+.mh-progress-text > span:first-child { white-space: nowrap; }
 .mh-progress-text { display: flex; justify-content: space-between; gap: 8px; font-size: 0.78rem; color: var(--mh-muted); font-variant-numeric: tabular-nums; }
 .mh-progress-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; direction: rtl; text-align: left; }
 

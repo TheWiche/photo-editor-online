@@ -1,6 +1,7 @@
 import { useId, useRef, type KeyboardEvent } from 'react';
 import { AdjustmentsPanel, FiltersPanel } from './AdjustmentsPanel';
 import { Icon, type IconName } from './icons';
+import { AiToolsPanel } from './AiToolsPanel';
 import { LayersPanel } from './LayersPanel';
 import { useUI, type RightTab } from './uiStore';
 
@@ -8,6 +9,7 @@ export const TABS: { id: RightTab; label: string; icon: IconName }[] = [
   { id: 'layers', label: 'Capas', icon: 'layers' },
   { id: 'adjust', label: 'Ajustes', icon: 'sliders' },
   { id: 'filters', label: 'Filtros', icon: 'wand' },
+  { id: 'ai', label: 'IA', icon: 'sparkles' },
 ];
 
 /** Panel derecho con pestañas. En móvil se muestra como hoja inferior. */
@@ -52,6 +54,7 @@ export function RightPanel() {
         {tab === 'layers' && <LayersPanel />}
         {tab === 'adjust' && <AdjustmentsPanel />}
         {tab === 'filters' && <FiltersPanel />}
+        {tab === 'ai' && <AiToolsPanel />}
       </div>
     </aside>
   );

@@ -47,16 +47,23 @@ export function detectBackend(): Promise<BackendInfo> {
         /* sin localStorage */
       }
       if (forced) return wasm('Se fuerza el modo WebAssembly (CPU) por configuración.');
-      const gpu = (navigator as Navigator & { gpu?: { requestAdapter(o?: unknown): Promise<GPUAdapterLike | null> } }).gpu;
+      const gpu = (navigator as unknown as { gpu?: { requestAdapter(o?: unknown): Promise<unknown> } }).gpu;
       if (!gpu) {
         return wasm('Tu navegador no ofrece WebGPU, así que la IA usará WebAssembly (CPU). Funciona igual, solo que más despacio.');
       }
-      const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
+      const adapter = (await gpu.requestAdapter({ powerPreference: 'high-performance' })) as GPUAdapterLike | null;
       if (!adapter) {
         return wasm('WebGPU existe pero no encontró una tarjeta gráfica compatible; se usará WebAssembly (CPU).');
       }
       const f16 = adapter.features?.has?.('shader-f16') ?? false;
       const info = adapter.info;
+      const softwareGpu =
+        adapter.isFallbackAdapter === true ||
+        info?.isFallbackAdapter === true ||
+        /swiftshader|llvmpipe|software/i.test(`${info?.vendor ?? ''} ${info?.architecture ?? ''} ${info?.description ?? ''}`);
+      if (softwareGpu) {
+        return wasm('La «GPU» disponible es una emulación por software (más lenta que la CPU); se usará WebAssembly.');
+      }
       return {
         backend: 'webgpu',
         f16,
@@ -74,7 +81,8 @@ export function detectBackend(): Promise<BackendInfo> {
 
 interface GPUAdapterLike {
   features?: { has(f: string): boolean };
-  info?: { vendor?: string; architecture?: string; description?: string };
+  isFallbackAdapter?: boolean;
+  info?: { vendor?: string; architecture?: string; description?: string; isFallbackAdapter?: boolean };
 }
 
 // ------------------------------------------------------------------ worker

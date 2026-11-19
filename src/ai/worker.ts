@@ -173,14 +173,41 @@ async function loadTransformers(id: ModuleId, ms: TransformersModelSpec, variant
     return { value: p, dispose: () => p.dispose?.() };
   };
   switch (id) {
-    case 'remove-bg':
-      return pipe('background-removal');
+    case 'remove-bg': {
+      // RMBG-1.4 declara un model_type propio: se carga como modelo «custom» (receta oficial del repo).
+      const [model, processor] = await Promise.all([
+        T.AutoModel.from_pretrained(ms.repo, { ...opts, config: { model_type: 'custom' } }),
+        T.AutoProcessor.from_pretrained(ms.repo, {
+          progress_callback,
+          config: {
+            do_normalize: true,
+            do_pad: false,
+            do_rescale: true,
+            do_resize: true,
+            image_mean: [0.5, 0.5, 0.5],
+            feature_extractor_type: 'ImageFeatureExtractor',
+            image_std: [1, 1, 1],
+            resample: 2,
+            rescale_factor: 0.00392156862745098,
+            size: { width: 1024, height: 1024 },
+          },
+        }),
+      ]);
+      return { value: { model, processor }, dispose: () => model.dispose?.() };
+    }
     case 'upscale':
       return pipe('image-to-image');
     case 'depth':
       return pipe('depth-estimation');
-    case 'nsfw':
-      return pipe('image-classification');
+    case 'nsfw': {
+      // Sin pipeline: el pipeline de clasificación pide un tokenizer que este repo no tiene
+      // (y esa petición fallida rompería el uso sin conexión).
+      const [model, processor] = await Promise.all([
+        T.AutoModelForImageClassification.from_pretrained(ms.repo, opts),
+        T.AutoProcessor.from_pretrained(ms.repo, { progress_callback }),
+      ]);
+      return { value: { model, processor }, dispose: () => model.dispose?.() };
+    }
     case 'segment': {
       const [model, processor] = await Promise.all([
         T.SamModel.from_pretrained(ms.repo, opts),
@@ -269,13 +296,21 @@ function fingerprint(d: ImageData): string {
 // ------------------------------------------------------------------ ejecuciones
 
 async function runRemoveBg(input: RunInputs['remove-bg'], variant: VariantKey, b: BackendInfo): Promise<ImageBitmap> {
-  const pipe = await getTransformersModel('remove-bg', 'main', variant, b);
+  const { model, processor } = await getTransformersModel('remove-bg', 'main', variant, b);
+  const T = await getTF();
   const { raw, data } = await toRaw(input.image);
-  const out: Any = await pipe(raw);
-  const od = toImageData(out.data, out.width, out.height, out.channels);
-  if (hasTransparency(data) && od.width === data.width && od.height === data.height) {
-    for (let i = 3; i < od.data.length; i += 4) od.data[i] = (od.data[i] * data.data[i]) / 255;
-  }
+  const { pixel_values } = await processor(raw);
+  const inputName: string = model.sessions?.model?.inputNames?.[0] ?? 'input';
+  const outputs = await model({ [inputName]: pixel_values });
+  let t = outputs.output ?? Object.values(outputs)[0];
+  t = t[0]; // [1, H, W]
+  const eps = 1e-5;
+  if ((t.data as Float32Array).some((x: number) => x < -eps || x > 1 + eps)) t = t.sigmoid();
+  const mask = await T.RawImage.fromTensor(t.mul(255).to('uint8')).resize(data.width, data.height);
+  const md = mask.data as Uint8Array;
+  const mc: number = mask.channels;
+  const od = new ImageData(new Uint8ClampedArray(data.data), data.width, data.height);
+  for (let i = 0, j = 0; i < od.data.length; i += 4, j += mc) od.data[i + 3] = (md[j] * data.data[i + 3]) / 255;
   return createImageBitmap(od);
 }
 
@@ -577,10 +612,14 @@ async function runCaption(input: RunInputs['caption'], variant: VariantKey, b: B
 }
 
 async function runNsfw(input: RunInputs['nsfw'], variant: VariantKey, b: BackendInfo): Promise<NsfwResult> {
-  const pipe = await getTransformersModel('nsfw', 'main', variant, b);
+  const { model, processor } = await getTransformersModel('nsfw', 'main', variant, b);
+  const T = await getTF();
   const { raw } = await toRaw(input.image);
-  const out: Array<{ label: string; score: number }> = await pipe(raw, { top_k: 2 });
-  const score = out.find((o) => o.label.toLowerCase() === 'nsfw')?.score ?? 0;
+  const { logits } = await model(await processor(raw));
+  const probs: number[] = Array.from(T.softmax(Array.from(logits.data as Float32Array)) as ArrayLike<number>);
+  const id2label: Record<string, string> = model.config?.id2label ?? { 0: 'sfw', 1: 'nsfw' };
+  const idx = Object.entries(id2label).find(([, l]) => l.toLowerCase() === 'nsfw')?.[0];
+  const score = probs[Number(idx ?? 1)] ?? 0;
   return { nsfw: score >= 0.5, score };
 }
 

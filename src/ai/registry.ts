@@ -85,7 +85,7 @@ export const MODULES: readonly ModuleSpec[] = [
     descriptionEs:
       'Aumenta el tamaño de la foto reconstruyendo detalle con una red neuronal (superresolución), en lugar de solo estirar los píxeles.',
     detailsEs:
-      'Incluye dos modelos Swin2SR: ×2 «clásico» (nítido, para fotos limpias) y ×4 «mundo real» (tolera ruido y compresión JPEG). La imagen se procesa por bloques, así que las fotos grandes tardan más.',
+      'Incluye dos modelos Swin2SR: ×2 «clásico» (nítido, para fotos limpias) y ×4 «mundo real» (tolera ruido y compresión JPEG). La imagen se procesa por bloques: con WebGPU es razonablemente rápido, pero en modo WASM (CPU) una foto de 1 megapíxel puede tardar varios minutos.',
     licenseEs: 'Swin2SR: licencia Apache-2.0.',
     sizeMB: 43,
     sizeByVariantMB: { wasm: 43, 'webgpu-f16': 65, webgpu: 107 },

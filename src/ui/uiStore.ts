@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { readPref, writePref } from './storage';
 
-export type RightTab = 'layers' | 'adjust' | 'filters';
+export type RightTab = 'layers' | 'adjust' | 'filters' | 'ai';
 export type DialogId = 'export' | 'new' | 'shortcuts' | 'ai' | null;
 
 export interface Toast { id: number; text: string; kind: 'info' | 'success' | 'error' }
