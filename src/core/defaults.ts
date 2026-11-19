@@ -1,7 +1,9 @@
-import type { Adjustments, Layer } from './contracts';
+import type { Adjustments, ColorBalanceSettings, CurvesSettings, HslSettings, Layer, LevelsSettings } from './contracts';
 
-/** Herramientas disponibles en el editor. */
-export type ToolId = 'move' | 'crop' | 'rotate' | 'text' | 'brush' | 'eraser' | 'eyedropper' | 'hand';
+/** Herramientas integradas. Las del registro (src/core/toolRegistry.ts) usan cualquier id. */
+export type BuiltinToolId = 'move' | 'crop' | 'rotate' | 'text' | 'brush' | 'eraser' | 'eyedropper' | 'hand';
+/** Id de herramienta: integradas o registradas por otros módulos. */
+export type ToolId = BuiltinToolId | (string & {});
 
 export type CropRatio = 'free' | 'original' | '1:1' | '4:5' | '16:9';
 
@@ -34,8 +36,33 @@ export function defaultAdjustments(): Adjustments {
   return { ...DEFAULT_ADJUSTMENTS };
 }
 
+/* ---------- color avanzado: valores neutros y comprobaciones ---------- */
+
+export const HSL_RANGES = ['Rojos', 'Naranjas', 'Amarillos', 'Verdes', 'Aguamarinas', 'Azules', 'Púrpuras', 'Magentas'] as const;
+/** Tono central (grados) de cada rango HSL. */
+export const HSL_CENTERS = [0, 30, 60, 120, 180, 225, 270, 315];
+export const HSL_SWATCHES = ['#ff4040', '#ff9a30', '#ffe040', '#40d050', '#40e0d0', '#4070ff', '#9a50ff', '#ff40c0'];
+
+export const neutralCurves = (): CurvesSettings => ({ rgb: [[0, 0], [255, 255]], r: [[0, 0], [255, 255]], g: [[0, 0], [255, 255]], b: [[0, 0], [255, 255]] });
+export const neutralLevels = (): LevelsSettings => ({ inBlack: 0, inWhite: 255, gamma: 1, outBlack: 0, outWhite: 255 });
+export const neutralHsl = (): HslSettings => ({ hue: Array(8).fill(0), sat: Array(8).fill(0), lum: Array(8).fill(0) });
+export const neutralColorBalance = (): ColorBalanceSettings => ({ shadows: [0, 0, 0], midtones: [0, 0, 0], highlights: [0, 0, 0], preserveLuminosity: true });
+
+const identityCurve = (c: [number, number][] | undefined) =>
+  !c || c.length === 0 || c.every(([x, y]) => x === y);
+export const isNeutralCurves = (c?: CurvesSettings) => !c || (identityCurve(c.rgb) && identityCurve(c.r) && identityCurve(c.g) && identityCurve(c.b));
+export const isNeutralLevels = (l?: LevelsSettings) => !l || (l.inBlack === 0 && l.inWhite === 255 && l.gamma === 1 && l.outBlack === 0 && l.outWhite === 255);
+export const isNeutralHsl = (h?: HslSettings) => !h || [...h.hue, ...h.sat, ...h.lum].every((v) => !v);
+export const isNeutralColorBalance = (b?: ColorBalanceSettings) => !b || [...b.shadows, ...b.midtones, ...b.highlights].every((v) => !v);
+export const hasAdvancedColor = (a: Adjustments) =>
+  !isNeutralCurves(a.curves) || !isNeutralLevels(a.levels) || !isNeutralHsl(a.hsl) || !isNeutralColorBalance(a.colorBalance);
+
+/** Ajustes numéricos/booleanos básicos (los del deslizador). */
+export type BasicAdjustmentKey = 'brightness' | 'contrast' | 'saturation' | 'exposure' | 'temperature' | 'tint'
+  | 'blur' | 'sharpen' | 'vignette' | 'grayscale' | 'sepia' | 'hue';
+
 export function isDefaultAdjustments(a: Adjustments): boolean {
-  return (Object.keys(DEFAULT_ADJUSTMENTS) as (keyof Adjustments)[]).every((k) => a[k] === DEFAULT_ADJUSTMENTS[k]);
+  return (Object.keys(DEFAULT_ADJUSTMENTS) as BasicAdjustmentKey[]).every((k) => a[k] === DEFAULT_ADJUSTMENTS[k]) && !hasAdvancedColor(a);
 }
 
 let counter = 0;

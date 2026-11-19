@@ -15,7 +15,7 @@ export interface Layer {
   x: number; y: number;       // posición en el lienzo (px)
   rotation: number;           // grados
   scaleX: number; scaleY: number;
-  bitmap?: ImageBitmap;       // para kind=image
+  bitmap?: ImageBitmap;       // kind=image: píxeles. kind=adjustment: región opcional (alfa) donde actúa el ajuste
   text?: { content: string; font: string; size: number; color: string; align: 'left'|'center'|'right' };
   adjustments: Adjustments;   // ajustes no destructivos por capa
 }
@@ -25,7 +25,23 @@ export interface Adjustments {
   exposure: number; temperature: number; tint: number;      // -100..100
   blur: number; sharpen: number; vignette: number;          // 0..100
   grayscale: boolean; sepia: number; hue: number;           // sepia 0..100, hue -180..180
+  /* --- Color avanzado (opcionales; ausente = neutro). Añadidos de forma retrocompatible. --- */
+  /** Curvas: puntos [entrada, salida] 0..255 ordenados por entrada, por canal. */
+  curves?: CurvesSettings;
+  /** Niveles de entrada/salida con gamma. */
+  levels?: LevelsSettings;
+  /** HSL por color: 8 rangos (rojos, naranjas, amarillos, verdes, aguamarinas, azules, púrpuras, magentas), -100..100. */
+  hsl?: HslSettings;
+  /** Balance de color por rango tonal: [cian↔rojo, magenta↔verde, amarillo↔azul] -100..100. */
+  colorBalance?: ColorBalanceSettings;
 }
+
+export type CurvePoint = [number, number];
+export interface CurvesSettings { rgb: CurvePoint[]; r: CurvePoint[]; g: CurvePoint[]; b: CurvePoint[] }
+export interface LevelsSettings { inBlack: number; inWhite: number; gamma: number; outBlack: number; outWhite: number }
+export interface HslSettings { hue: number[]; sat: number[]; lum: number[] }
+export type Rgb3 = [number, number, number];
+export interface ColorBalanceSettings { shadows: Rgb3; midtones: Rgb3; highlights: Rgb3; preserveLuminosity: boolean }
 
 export interface DocumentState {
   width: number; height: number;

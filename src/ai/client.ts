@@ -25,6 +25,7 @@ import { getModuleInfo, getModuleSpec, MODULE_IDS } from './registry';
 import * as store from './cache';
 import { getState, setState } from './status';
 import { installOcr, runOcr, terminateOcr } from './ocr';
+import { confirmDownload } from './downloadGuard';
 
 export type { BackendInfo } from './types';
 
@@ -194,11 +195,18 @@ export function ensureStatusLoaded(): Promise<void> {
 
 const installing = new Map<ModuleId, { promise: Promise<void>; controller: AbortController }>();
 
+export interface InstallOptions {
+  /** No mostrar el aviso previo (solo si la UI ya lo confirmó para este módulo). */
+  skipConfirm?: boolean;
+}
+
 /**
  * Descarga el módulo UNA vez y lo deja guardado (Cache API / IndexedDB). Si ya está instalado y
  * verificado, no descarga nada. `onProgress` recibe eventos por archivo.
+ * Antes de descargar muestra el aviso de tamaño/espacio/red (downloadGuard.ts); si el usuario
+ * cancela, rechaza con CancelledError('Descarga cancelada').
  */
-export function install(id: ModuleId, onProgress?: (e: ProgressEvent) => void, signal?: AbortSignal): Promise<void> {
+export function install(id: ModuleId, onProgress?: (e: ProgressEvent) => void, signal?: AbortSignal, opts: InstallOptions = {}): Promise<void> {
   const running = installing.get(id);
   if (running) {
     signal?.addEventListener('abort', () => running.controller.abort(), { once: true });
@@ -212,9 +220,13 @@ export function install(id: ModuleId, onProgress?: (e: ProgressEvent) => void, s
       setState(id, { status: 'installed', variant: rec?.variant, bytes: rec?.bytes }, true);
       return;
     }
-    void store.requestPersistence();
     const spec = getModuleSpec(id);
     const backend = await detectBackend();
+    if (!opts.skipConfirm && !(await confirmDownload([id], backend))) {
+      throw new CancelledError('Descarga cancelada');
+    }
+    if (controller.signal.aborted) throw new CancelledError('Descarga cancelada');
+    void store.requestPersistence();
     const variantGuess = backend.backend === 'webgpu' ? (backend.f16 ? 'webgpu-f16' : 'webgpu') : 'wasm';
     const expected = spec.sizeByVariantMB[variantGuess] * 1e6;
     const files = new Map<string, { loaded: number; total: number }>();
@@ -249,6 +261,19 @@ export function install(id: ModuleId, onProgress?: (e: ProgressEvent) => void, s
   })().finally(() => installing.delete(id));
   installing.set(id, { promise, controller });
   return promise;
+}
+
+/**
+ * Descarga varios módulos mostrando UN solo aviso con el tamaño total (incluido el motor compartido).
+ * Rechaza con CancelledError si el usuario cancela.
+ */
+export async function installMany(ids: ModuleId[], onProgress?: (e: ProgressEvent) => void, signal?: AbortSignal): Promise<void> {
+  const missing: ModuleId[] = [];
+  for (const id of new Set(ids)) if (!(await store.isInstalled(id))) missing.push(id);
+  if (!missing.length) return;
+  const backend = await detectBackend();
+  if (!(await confirmDownload(missing, backend))) throw new CancelledError('Descarga cancelada');
+  for (const id of missing) await install(id, onProgress, signal, { skipConfirm: true });
 }
 
 /** Cancela la descarga en curso de un módulo (si la hay). */

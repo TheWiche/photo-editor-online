@@ -62,13 +62,27 @@ export function useModuleStatus(id: ModuleId): UseModuleStatus {
 }
 
 /**
- * Comprueba (contra la caché real) si el módulo está instalado. Si no lo está, abre el
- * Centro de módulos resaltando ese módulo y devuelve false.
+ * Comprueba (contra la caché real) si el módulo está instalado.
+ *  - Con `install: true`: muestra el aviso de descarga (tamaño, espacio, red) y, si se acepta,
+ *    descarga el módulo aquí mismo; devuelve true al terminar o false si se canceló/falló.
+ *  - Sin `install`: si falta, abre el Centro de módulos resaltando ese módulo y devuelve false
+ *    (la descarga desde el Centro también pasa por el aviso).
  */
-export async function ensureInstalled(id: ModuleId, opts: { openHub?: boolean } = {}): Promise<boolean> {
+export async function ensureInstalled(
+  id: ModuleId,
+  opts: { openHub?: boolean; install?: boolean; signal?: AbortSignal } = {},
+): Promise<boolean> {
   const spec = getModuleSpec(id);
   if (spec.availability === 'proximamente') return false;
   if (await isInstalled(id)) return true;
+  if (opts.install) {
+    try {
+      await install(id, undefined, opts.signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   if (opts.openHub !== false) openModuleHub(id);
   return false;
 }

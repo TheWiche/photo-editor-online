@@ -4,6 +4,7 @@
  * viñeta y nitidez). Usa OffscreenCanvas cuando el navegador lo soporta.
  */
 import type { Adjustments, DocumentState, Layer } from './contracts';
+import { compileColor, runColor } from './color';
 import { isDefaultAdjustments, type Point } from './defaults';
 
 export type AnyCanvas = HTMLCanvasElement | OffscreenCanvas;
@@ -123,7 +124,7 @@ export function layerCorners(layer: Layer): Point[] {
 export function hitTest(doc: DocumentState, p: Point, includeLocked = false): Layer | null {
   for (let i = doc.layers.length - 1; i >= 0; i--) {
     const l = doc.layers[i];
-    if (!l.visible || (l.locked && !includeLocked)) continue;
+    if (!l.visible || (l.locked && !includeLocked) || l.kind === 'adjustment') continue;
     const { w, h } = layerSize(l);
     const q = docToLocal(l, p);
     if (q.x >= 0 && q.y >= 0 && q.x <= w && q.y <= h) return l;
@@ -235,7 +236,8 @@ function sharpenPixels(ctx: Ctx2D, w: number, h: number, amount: number) {
 /** Aplica los ajustes a una fuente y devuelve un lienzo nuevo del mismo tamaño. */
 export function renderAdjusted(src: CanvasImageSource, w: number, h: number, a: Adjustments): AnyCanvas {
   const out = createCanvas(w, h);
-  const needPixels = a.sharpen > 0 || !canvasFilterSupported();
+  const prog = compileColor(a);
+  const needPixels = a.sharpen > 0 || !canvasFilterSupported() || !!prog;
   const ctx = ctx2d(out, needPixels ? { willReadFrequently: true } : undefined);
   const css = cssColorFilter(a);
   const blur = blurRadius(a, w, h);
@@ -252,6 +254,11 @@ export function renderAdjusted(src: CanvasImageSource, w: number, h: number, a: 
     ctx.drawImage(src, 0, 0, w, h);
     if (blur > 0.3) fallbackBlur(ctx, out, w, h, blur);
     if (css) applyMatrixPixels(ctx, w, h, colorMatrix(a));
+  }
+  if (prog) {
+    const img = ctx.getImageData(0, 0, out.width, out.height);
+    runColor(img.data, prog);
+    ctx.putImageData(img, 0, 0);
   }
   if (a.sharpen > 0) sharpenPixels(ctx, w, h, a.sharpen / 100);
   if (a.temperature || a.tint) {
@@ -286,7 +293,8 @@ export function renderAdjusted(src: CanvasImageSource, w: number, h: number, a: 
 
 export interface LiveEdit {
   layerId: string;
-  kind: 'mask' | 'paint';
+  /** mask: sustituye la máscara · paint: se pinta encima · replace: sustituye los píxeles de la capa. */
+  kind: 'mask' | 'paint' | 'replace';
   canvas: AnyCanvas;
   opacity: number;
   version: number;
@@ -302,22 +310,53 @@ export function onLiveEdit(fn: () => void) { liveListeners.add(fn); return () =>
 
 const objIds = new WeakMap<object, number>();
 let nextObjId = 1;
-function oid(o: object | undefined | null): number {
+/** Identificador estable por objeto (las capas son inmutables: cambia el objeto ⇒ cambia el id). */
+export function oid(o: object | undefined | null): number {
   if (!o) return 0;
   let id = objIds.get(o);
   if (!id) { id = nextObjId++; objIds.set(o, id); }
   return id;
 }
 
+/** Por encima de estos píxeles, mientras se edita se previsualiza a resolución reducida y luego se refina. */
+export const PREVIEW_PIXELS = 2_000_000;
+const REFINE_MS = 260;
+
+/** Tamaño reducido para vista previa. */
+export function previewSize(w: number, h: number, maxPixels = PREVIEW_PIXELS): { w: number; h: number; k: number } {
+  const k = Math.min(1, Math.sqrt(maxPixels / Math.max(1, w * h)));
+  return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)), k };
+}
+
 interface Prepared { src: CanvasImageSource; w: number; h: number }
-interface Entry { key: string; canvas: AnyCanvas }
+interface Entry { key: string; canvas: AnyCanvas; preview?: boolean }
+interface AdjEntry { key: string; adj: AnyCanvas; region: AnyCanvas | null; preview: boolean }
+
+export interface ComposeOptions {
+  scale?: number;
+  compare?: boolean;
+  background?: string | null;
+  /** Permite vista previa a resolución reducida para ajustes pesados (sólo el visor). */
+  preview?: boolean;
+}
 
 export class Compositor {
   private text = new Map<string, Entry>();
   private adjusted = new Map<string, Entry>();
   private masked = new Map<string, Entry>();
+  private small = new Map<string, Entry>();
+  private adjLayers = new Map<string, AdjEntry>();
+  private refineTimer: ReturnType<typeof setTimeout> | undefined;
+  private refineDue = false;
+  /** Se llama cuando conviene recomponer a calidad completa tras una vista previa. */
+  onRefine: (() => void) | null = null;
 
-  /** Fuente sin ajustes (bitmap o texto rasterizado). */
+  private scheduleRefine() {
+    clearTimeout(this.refineTimer);
+    this.refineTimer = setTimeout(() => { this.refineDue = true; this.onRefine?.(); }, REFINE_MS);
+  }
+
+  /** Fuente sin ajustes (bitmap o texto rasterizado). En capas de ajuste: su región. */
   source(layer: Layer): Prepared | null {
     if (layer.kind === 'text' && layer.text) {
       const key = JSON.stringify(layer.text);
@@ -329,22 +368,49 @@ export class Compositor {
     return null;
   }
 
+  private smallOf(id: string, base: Prepared, key: string): AnyCanvas {
+    let e = this.small.get(id);
+    if (!e || e.key !== key) {
+      const p = previewSize(base.w, base.h);
+      const c = createCanvas(p.w, p.h);
+      const x = ctx2d(c);
+      x.imageSmoothingQuality = 'medium';
+      x.drawImage(base.src, 0, 0, p.w, p.h);
+      e = { key, canvas: c };
+      this.small.set(id, e);
+    }
+    return e.canvas;
+  }
+
   /** Capa lista para componer: con ajustes, trazos en vivo y máscara. */
-  prepare(layer: Layer, mask: ImageBitmap | undefined, compare = false): Prepared | null {
-    const base = this.source(layer);
-    if (!base) return null;
-    const { w, h } = base;
+  prepare(layer: Layer, mask: ImageBitmap | undefined, compare = false, preview = false): Prepared | null {
+    const orig = this.source(layer);
+    if (!orig) return null;
+    const { w, h } = orig;
+    const lv = live && live.layerId === layer.id ? live : null;
+    const replacing = lv?.kind === 'replace';
+    const base: Prepared = replacing ? { src: lv!.canvas, w, h } : orig;
     let src: CanvasImageSource = base.src;
-    let key = `${oid(base.src as object)}`;
+    let key = replacing ? `live${lv!.version}` : `${oid(base.src as object)}`;
     if (!compare && !isDefaultAdjustments(layer.adjustments)) {
       const k = `${key}|${JSON.stringify(layer.adjustments)}`;
+      const big = w * h > PREVIEW_PIXELS;
+      const wantFull = !preview || !big || (this.refineDue && !replacing);
       let e = this.adjusted.get(layer.id);
-      if (!e || e.key !== k) { e = { key: k, canvas: renderAdjusted(base.src, w, h, layer.adjustments) }; this.adjusted.set(layer.id, e); }
-      src = e.canvas; key = k;
+      if (!e || e.key !== k || (e.preview && wantFull)) {
+        if (!wantFull && (!e || e.key !== k)) {
+          const sm = this.smallOf(layer.id, base, key);
+          e = { key: k, canvas: renderAdjusted(sm, sm.width, sm.height, layer.adjustments), preview: true };
+          this.scheduleRefine();
+        } else {
+          e = { key: k, canvas: renderAdjusted(base.src, w, h, layer.adjustments), preview: false };
+        }
+        this.adjusted.set(layer.id, e);
+      }
+      src = e.canvas; key = `${k}|${e.preview ? 'p' : 'f'}`;
     } else {
       this.adjusted.delete(layer.id);
     }
-    const lv = live && live.layerId === layer.id ? live : null;
     const maskSrc: CanvasImageSource | undefined = lv?.kind === 'mask' ? lv.canvas : mask;
     if (!maskSrc && !(lv?.kind === 'paint')) { this.masked.delete(layer.id); return { src, w, h }; }
     const k = `${key}|m${lv ? `live${lv.version}` : oid(mask)}`;
@@ -364,8 +430,74 @@ export class Compositor {
     return { src: e.canvas, w, h };
   }
 
+  /**
+   * Capa de ajuste: aplica sus ajustes a todo lo que hay debajo, limitado a su región
+   * (bitmap alfa de la capa, con su transformación) y a su máscara.
+   */
+  private drawAdjustmentLayer(ctx: Ctx2D, doc: DocumentState, index: number, masks: Masks, preview: boolean, background: string | null | undefined) {
+    const layer = doc.layers[index];
+    if (isDefaultAdjustments(layer.adjustments)) return;
+    const C = ctx.canvas as AnyCanvas;
+    const cw = C.width, ch = C.height;
+    let sig = `${cw}x${ch}|${oid(layer)}|${oid(masks[layer.id])}|${background ?? ''}`;
+    let liveBelow = false;
+    for (let j = 0; j < index; j++) {
+      const l = doc.layers[j];
+      sig += `,${oid(l)}:${oid(masks[l.id])}`;
+      if (live && live.layerId === l.id) { sig += `v${live.version}`; liveBelow = true; }
+    }
+    if (live && live.layerId === layer.id) sig += `self${live.version}`;
+    const big = cw * ch > PREVIEW_PIXELS;
+    const wantFull = !preview || !big || (this.refineDue && !liveBelow);
+    let e = this.adjLayers.get(layer.id);
+    if (!e || e.key !== sig || (e.preview && wantFull)) {
+      const usePreview = !wantFull;
+      const p = usePreview ? previewSize(cw, ch) : { w: cw, h: ch, k: 1 };
+      const below = createCanvas(p.w, p.h);
+      const bctx = ctx2d(below);
+      bctx.drawImage(C, 0, 0, p.w, p.h);
+      const adj = renderAdjusted(below, p.w, p.h, layer.adjustments);
+      let region: AnyCanvas | null = null;
+      if (layer.bitmap) {
+        region = createCanvas(p.w, p.h);
+        const r = ctx2d(region);
+        const f = (cw / doc.width) * p.k;
+        const { w, h } = layerSize(layer);
+        r.setTransform(f, 0, 0, f, 0, 0);
+        r.translate(layer.x + w / 2, layer.y + h / 2);
+        r.rotate((layer.rotation * Math.PI) / 180);
+        r.scale(layer.scaleX, layer.scaleY);
+        r.drawImage(layer.bitmap, -w / 2, -h / 2, w, h);
+        const lm = live && live.layerId === layer.id && live.kind === 'mask' ? live.canvas : masks[layer.id];
+        if (lm) { r.globalCompositeOperation = 'destination-in'; r.drawImage(lm, -w / 2, -h / 2, w, h); }
+        const a = ctx2d(adj);
+        a.globalCompositeOperation = 'destination-in';
+        a.drawImage(region, 0, 0);
+        a.globalCompositeOperation = 'source-over';
+      }
+      e = { key: sig, adj, region, preview: usePreview };
+      if (usePreview) this.scheduleRefine();
+      this.adjLayers.set(layer.id, e);
+    }
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = layer.opacity;
+    ctx.imageSmoothingEnabled = true;
+    if (layer.blend === 'source-over') {
+      // Mezcla exacta: destino·(1−m) + ajustado·m (ambos premultiplicados).
+      ctx.globalCompositeOperation = 'destination-out';
+      if (e.region) ctx.drawImage(e.region, 0, 0, cw, ch);
+      else { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cw, ch); }
+      ctx.globalCompositeOperation = 'lighter';
+    } else {
+      ctx.globalCompositeOperation = layer.blend;
+    }
+    ctx.drawImage(e.adj, 0, 0, cw, ch);
+    ctx.restore();
+  }
+
   /** Dibuja el documento completo en ctx a la escala dada. */
-  compose(ctx: Ctx2D, doc: DocumentState, masks: Masks, opts: { scale?: number; compare?: boolean; background?: string | null } = {}) {
+  compose(ctx: Ctx2D, doc: DocumentState, masks: Masks, opts: ComposeOptions = {}) {
     const s = opts.scale ?? 1;
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -376,10 +508,14 @@ export class Compositor {
     if (opts.background) { ctx.fillStyle = opts.background; ctx.fillRect(0, 0, doc.width, doc.height); }
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    for (const layer of doc.layers) {
-      if (!layer.visible || layer.opacity <= 0) continue;
-      const p = this.prepare(layer, masks[layer.id], opts.compare);
-      if (!p) continue;
+    doc.layers.forEach((layer, i) => {
+      if (!layer.visible || layer.opacity <= 0) return;
+      if (layer.kind === 'adjustment') {
+        if (!opts.compare) this.drawAdjustmentLayer(ctx, doc, i, masks, !!opts.preview, opts.background);
+        return;
+      }
+      const p = this.prepare(layer, masks[layer.id], opts.compare, opts.preview);
+      if (!p) return;
       ctx.save();
       ctx.globalAlpha = layer.opacity;
       ctx.globalCompositeOperation = layer.blend;
@@ -388,13 +524,14 @@ export class Compositor {
       ctx.scale(layer.scaleX, layer.scaleY);
       ctx.drawImage(p.src, -p.w / 2, -p.h / 2, p.w, p.h);
       ctx.restore();
-    }
+    });
     ctx.restore();
+    if (opts.preview) this.refineDue = false;
   }
 
   /** Libera cachés de capas que ya no existen. */
   prune(ids: Set<string>) {
-    for (const m of [this.text, this.adjusted, this.masked]) for (const k of m.keys()) if (!ids.has(k)) m.delete(k);
+    for (const m of [this.text, this.adjusted, this.masked, this.small, this.adjLayers]) for (const k of m.keys()) if (!ids.has(k)) m.delete(k);
   }
 }
 
@@ -428,12 +565,16 @@ export interface Scene { doc: DocumentState | null; masks: Masks; compare: boole
 /**
  * Renderizador del lienzo visible. Compone el documento a resolución completa sólo
  * cuando cambia (capas/máscaras/comparar) y redibuja el visor en requestAnimationFrame
- * para zoom, desplazamiento y superposiciones.
+ * para zoom, desplazamiento y superposiciones. Con zoom lejano usa una versión reducida
+ * (mip) de la composición para que el redibujado sea barato en imágenes grandes.
  */
 export class ViewportRenderer {
   overlay: ((ctx: CanvasRenderingContext2D, t: ViewTransform) => void) | null = null;
+  /** Sustituye el dibujo de la composición (p. ej. vista previa de enderezar/perspectiva). */
+  imageOverride: ((ctx: CanvasRenderingContext2D, t: ViewTransform, comp: AnyCanvas) => boolean) | null = null;
   background = '#101116';
   private comp: AnyCanvas | null = null;
+  private mip: { level: number; canvas: AnyCanvas } | null = null;
   private dirty = true;
   private raf = 0;
   private scene: Scene | null = null;
@@ -441,9 +582,12 @@ export class ViewportRenderer {
   private cssW = 1;
   private cssH = 1;
   private offLive: () => void;
+  /** Duración del último recompose (ms), útil para diagnosticar rendimiento. */
+  lastComposeMs = 0;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.offLive = onLiveEdit(() => { this.dirty = true; this.request(); });
+    compositor.onRefine = () => { this.dirty = true; this.request(); };
   }
 
   setSize(w: number, h: number) {
@@ -472,6 +616,9 @@ export class ViewportRenderer {
     return this.comp;
   }
 
+  /** Marca la composición como obsoleta (p. ej. tras cambiar algo fuera del store). */
+  invalidate() { this.dirty = true; this.request(); }
+
   request() {
     if (this.raf) return;
     this.raf = requestAnimationFrame(() => { this.raf = 0; this.draw(); });
@@ -480,15 +627,33 @@ export class ViewportRenderer {
   destroy() {
     cancelAnimationFrame(this.raf);
     this.offLive();
+    if (compositor.onRefine) compositor.onRefine = null;
   }
 
   private recompose() {
     const doc = this.scene?.doc;
     this.dirty = false;
+    this.mip = null;
     if (!doc) { this.comp = null; return; }
+    const t0 = performance.now();
     if (!this.comp || this.comp.width !== doc.width || this.comp.height !== doc.height) this.comp = createCanvas(doc.width, doc.height);
-    compositor.compose(ctx2d(this.comp, { willReadFrequently: false }), doc, this.scene!.masks, { compare: this.scene!.compare });
+    compositor.compose(ctx2d(this.comp, { willReadFrequently: false }), doc, this.scene!.masks, { compare: this.scene!.compare, preview: true });
     compositor.prune(new Set(doc.layers.map((l) => l.id)));
+    this.lastComposeMs = performance.now() - t0;
+  }
+
+  private source(scale: number): AnyCanvas {
+    const comp = this.comp!;
+    const level = Math.floor(Math.log2(1 / Math.max(1e-6, scale)));
+    if (level < 1 || comp.width * comp.height < 1_500_000) return comp;
+    if (this.mip?.level === level) return this.mip.canvas;
+    const f = Math.pow(2, -level);
+    const c = createCanvas(comp.width * f, comp.height * f);
+    const x = ctx2d(c);
+    x.imageSmoothingQuality = 'high';
+    x.drawImage(comp, 0, 0, c.width, c.height);
+    this.mip = { level, canvas: c };
+    return c;
   }
 
   private checker(ctx: CanvasRenderingContext2D): CanvasPattern | null {
@@ -525,7 +690,7 @@ export class ViewportRenderer {
       if (this.comp) {
         ctx.imageSmoothingEnabled = t.zoom < 2;
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(this.comp, t.ox, t.oy, w, h);
+        if (!this.imageOverride?.(ctx, t, this.comp)) ctx.drawImage(this.source(t.zoom * dpr), t.ox, t.oy, w, h);
       }
       this.overlay?.(ctx, t);
     }
