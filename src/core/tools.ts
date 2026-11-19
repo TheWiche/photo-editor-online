@@ -1,5 +1,5 @@
 import type { Adjustments } from './contracts';
-import type { ToolId } from './defaults';
+import type { BasicAdjustmentKey, ToolId } from './defaults';
 
 export interface ToolInfo {
   id: ToolId;
@@ -75,7 +75,7 @@ export const TOOLS: ToolInfo[] = [
 export const toolInfo = (id: ToolId) => TOOLS.find((t) => t.id === id)!;
 
 export interface AdjustmentInfo {
-  key: Exclude<keyof Adjustments, 'grayscale'>;
+  key: Exclude<BasicAdjustmentKey, 'grayscale'>;
   label: string;
   min: number;
   max: number;

@@ -11,6 +11,7 @@ import { pickFile, saveToDisk } from './fsAccess';
 import { useProduct } from './state';
 
 const toast = (text: string, kind: 'info' | 'success' | 'error' = 'info') => useUI.getState().toast(text, kind);
+const setBusy = (m: string | null) => useEditor.getState().setBusy(m);
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 let fileHandle: Awaited<ReturnType<typeof saveToDisk>>['handle'] | null = null;
@@ -48,7 +49,7 @@ export async function saveProject(opts: { asNew?: boolean; name?: string } = {})
   const { doc, masks } = s;
   if (!doc) return null;
   const prod = useProduct.getState();
-  prod.set({ busy: t('busy.saving') });
+  setBusy(t('busy.saving'));
   try {
     const name = (opts.name ?? s.fileName).trim() || 'sin-titulo';
     const reuse = !opts.asNew && prod.currentId ? prod.currentId : null;
@@ -68,7 +69,7 @@ export async function saveProject(opts: { asNew?: boolean; name?: string } = {})
     toast(t('err.save', { msg: errMsg(e) }), 'error');
     return null;
   } finally {
-    useProduct.getState().set({ busy: null });
+    setBusy(null);
   }
 }
 
@@ -79,7 +80,7 @@ export async function loadBundle(bundle: ProjectBundle, opts: { projectId?: stri
 
 export async function openProject(id: string): Promise<boolean> {
   if (!confirmDiscard()) return false;
-  useProduct.getState().set({ busy: t('busy.opening') });
+  setBusy(t('busy.opening'));
   try {
     const bundle = await db.getBundle(id);
     if (!bundle) throw new Error(t('err.notFound'));
@@ -89,7 +90,7 @@ export async function openProject(id: string): Promise<boolean> {
     toast(t('err.open', { msg: errMsg(e) }), 'error');
     return false;
   } finally {
-    useProduct.getState().set({ busy: null });
+    setBusy(null);
   }
 }
 
@@ -129,7 +130,7 @@ export async function exportProjectFile(opts: { saveAs?: boolean } = {}): Promis
   const s = useEditor.getState();
   const { doc, masks } = s;
   if (!doc) return;
-  useProduct.getState().set({ busy: t('busy.saving') });
+  setBusy(t('busy.saving'));
   try {
     const bundle = await serializeSnapshot(doc, masks, s.fileName, { source: getSourceInfo()?.meta });
     const blob = encodeEstudio(bundle, await makeThumbBlob(doc, masks));
@@ -143,13 +144,13 @@ export async function exportProjectFile(opts: { saveAs?: boolean } = {}): Promis
   } catch (e) {
     toast(t('err.save', { msg: errMsg(e) }), 'error');
   } finally {
-    useProduct.getState().set({ busy: null });
+    setBusy(null);
   }
 }
 
 export async function openProjectFile(file: Blob): Promise<boolean> {
   if (!confirmDiscard()) return false;
-  useProduct.getState().set({ busy: t('busy.opening') });
+  setBusy(t('busy.opening'));
   try {
     const { bundle } = await decodeEstudio(file);
     await loadBundle(bundle);
@@ -159,7 +160,7 @@ export async function openProjectFile(file: Blob): Promise<boolean> {
     toast(e instanceof Error && (e.message === 'bad-file' || e.message === 'bad-project') ? t('err.badFile') : t('err.open', { msg: errMsg(e) }), 'error');
     return false;
   } finally {
-    useProduct.getState().set({ busy: null });
+    setBusy(null);
   }
 }
 

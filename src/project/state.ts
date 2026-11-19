@@ -10,12 +10,11 @@ interface ProductState {
   /** Proyecto de IndexedDB asociado al documento actual. */
   currentId: string | null;
   recover: RecoverInfo | null;
-  busy: string | null;
   set(p: Partial<Omit<ProductState, 'set'>>): void;
 }
 
 export const useProduct = create<ProductState>()((set) => ({
-  projectsOpen: false, exportOpen: false, compareOpen: false, currentId: null, recover: null, busy: null,
+  projectsOpen: false, exportOpen: false, compareOpen: false, currentId: null, recover: null,
   set: (p) => set(p),
 }));
 
